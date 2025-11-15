@@ -23,6 +23,8 @@ const phoneE164 = /^\+?[1-9]\d{6,14}$/;
 const FormSchema = z.object({
   whatsappNumber: z.string().regex(phoneE164, "Use E.164 format like +1234567890"),
   siteId: z.string().min(1, "Site ID is required"),
+  circle:z.string().min(1,"Circle is required"),
+  company:z.string().min(1,"Company is required"),
   sectorNumber: z.string().min(1, "Sector is required"), // <-- NOW STRING
 });
 
@@ -41,7 +43,7 @@ export default function CreateTaskDialog({
 
   const form = useForm<FormValues>({
     resolver: zodResolver(FormSchema),
-    defaultValues: { whatsappNumber: "", siteId: "", sectorNumber: "" },
+    defaultValues: { whatsappNumber: "", siteId: "", sectorNumber: "",circle:"",company:"" },
     mode: "onSubmit",
   });
 
@@ -56,6 +58,8 @@ export default function CreateTaskDialog({
         workerPhone: values.whatsappNumber,
         siteId: values.siteId.trim(),
         sector: values.sectorNumber.trim(), // <-- STRING NOW
+        circle:values.circle.trim(),
+        company:values.company.trim(),
       };
 
       const newJob = await createJob(payload);
@@ -118,6 +122,34 @@ export default function CreateTaskDialog({
                         <FormLabel>Site ID *</FormLabel>
                         <FormControl>
                           <Input placeholder="e.g. BHOPAL-1234" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name="circle"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Circle </FormLabel>
+                        <FormControl>
+                          <Input placeholder="e.g. Delhi" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name="company"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Company *</FormLabel>
+                        <FormControl>
+                          <Input {...field} />
                         </FormControl>
                         <FormMessage />
                       </FormItem>

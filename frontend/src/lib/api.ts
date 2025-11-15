@@ -21,6 +21,8 @@ export type BackendJob = {
   workerPhone: string;
   siteId: string;
   sectors: SectorBlock[];
+  circle:string
+  company:string
   status: "PENDING" | "IN_PROGRESS" | "DONE" | "FAILED";
   createdAt?: string | null;
   macId?: string | null;

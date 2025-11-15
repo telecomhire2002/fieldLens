@@ -12,6 +12,8 @@ export type UITask = {
   title: string;
   phoneNumber: string;
   status: TaskStatus;
+  circle:string;
+  company:string;
   createdAt: string;
   siteId?: string;
   sectors?: Array<{ sector: string; status?: TaskStatus } | number>;
@@ -99,6 +101,12 @@ export function TaskCard({
 
       <CardContent className="flex-1 flex flex-col gap-3 text-sm text-muted-foreground">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <div className="break-all">
+            <span className="font-medium text-foreground">Circle:</span> {task.circle}
+          </div>
+          <div className="break-all">
+            <span className="font-medium text-foreground">Company:</span> {task.company}
+          </div>
           <div className="break-all">
             <span className="font-medium text-foreground">Job Id:</span> {task.id}
           </div>
