@@ -73,6 +73,8 @@ export default function Dashboard() {
       status: toUpper(j.status) as "PENDING" | "IN_PROGRESS" | "DONE" | "FAILED",
       createdAt: toIsoCreated(j),
       siteId: j?.siteId,
+      circle:j?.circle,
+      company:j?.company,
       sectors: j?.sectors,
       sectorProgress: j?.sectorProgress,
     }));
