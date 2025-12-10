@@ -156,9 +156,8 @@ export async function deleteJob(jobId: string): Promise<void> {
 
 
 
-export async function downloadJobXlsxHOTO(jobId: string, sectorId: string, file: File) {
+export async function downloadJobXlsxHOTO(jobId: string, file: File) {
   const formData = new FormData();
-  formData.append("sectorId", sectorId);
   formData.append("mainExcel", file);
 
   const res = await api.post(`/jobs/${jobId}/export.csv`, formData, {

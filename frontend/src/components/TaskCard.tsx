@@ -132,7 +132,7 @@ export function TaskCard({ task, onPreview, onDeleted }: any) {
                   if (!file) return;
 
                   try {
-                    await downloadJobXlsxHOTO(task.id, task.sector, file);
+                    await downloadJobXlsxHOTO(task.id, file);
                   } catch (err) {
                     alert("Export failed");
                   } finally {
