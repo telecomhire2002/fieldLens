@@ -119,11 +119,11 @@ TYPE_REGISTRY = {
         "example_default": f"{APP_BASE_URL}/static/examples/roxtec.jpeg",
         "validated": False,
     },
-    "A6_PANEL": {
-        "label": "A6 Panel",
-        "prompt": "Send *A6 Panel* overview photo. *A6 पैनल* की पूरी फोटो भेजो (पूरा पैनल दिखे).",
-        "example_env": "PUBLIC_EXAMPLE_URL_A6_PANEL",
-        "example_default": f"{APP_BASE_URL}/static/examples/a6_panel.jpeg",
+    "A6_TOWER": {
+        "label": "A6 Tower",
+        "prompt": "Send *A6 Tower* overview photo. *A6 टावर* की पूरी फोटो भेजो (पूरा पैनल दिखे).",
+        "example_env": "PUBLIC_EXAMPLE_URL_A6_TOWER",
+        "example_default": f"{APP_BASE_URL}/static/examples/a6_tower.jpeg",
         "validated": False,
     },
     "MCB_POWER": {
@@ -193,7 +193,7 @@ def type_label(t: str) -> str:
         "TILT": "Antenna Tilt",
         "LABELLING": "Device Label (MAC/RSN)",
         "ROXTEC": "Roxtec Seal",
-        "A6_PANEL": "A6 Panel",
+        "A6_TOWER": "A6 Tower",
         "MCB_POWER": "MCB Power",
         "CPRI_TERM_SWITCH_CSS": "CPRI Termination (Switch/CSS)",
         "GROUNDING_OGB_TOWER": "Grounding OGB / Tower",
@@ -240,7 +240,7 @@ DEFAULT_14_TYPES = [
     "TILT",
     "LABELLING",
     "ROXTEC",
-    "A6_PANEL",
+    "A6_TOWER",
     "MCB_POWER",
     "CPRI_TERM_SWITCH_CSS",
     "GROUNDING_OGB_TOWER",
@@ -248,14 +248,14 @@ DEFAULT_14_TYPES = [
 
 # Per-sector overrides if you need to vary order or omit a type.
 # If a sector is not present here, we fall back to ALL_REQUIRED_14.
-SECTOR_TEMPLATES: dict[int, List[str]] = {
-    1: DEFAULT_14_TYPES,        # same set for now (you can reorder if you like)
-    2: DEFAULT_14_TYPES,
-    3: DEFAULT_14_TYPES,
+SECTOR_TEMPLATES: dict[str, List[str]] = {
+    '1': DEFAULT_14_TYPES,        # same set for now (you can reorder if you like)
+    '2': DEFAULT_14_TYPES,
+    '3': DEFAULT_14_TYPES,
     # add more sectors here…
 }
 
-def build_required_types_for_sector(sector: int | None) -> List[str]:
+def build_required_types_for_sector(sector: str | None) -> List[str]:
     """
     Return the required photo-type codes for a given sector.
     If the sector is unknown/None, return the full 14-type list.
@@ -263,7 +263,7 @@ def build_required_types_for_sector(sector: int | None) -> List[str]:
     try:
         if sector is None:
             return DEFAULT_14_TYPES
-        return SECTOR_TEMPLATES.get(int(sector), DEFAULT_14_TYPES)
+        return SECTOR_TEMPLATES.get(sector, DEFAULT_14_TYPES)
     except Exception:
         # Never return the tiny two-item default again
         return DEFAULT_14_TYPES
@@ -323,7 +323,7 @@ MAC_RE    = re.compile(r"\b([0-9A-F]{12})\b", re.IGNORECASE)
 RSN_RE    = re.compile(r"\b(RSN|SR|SN)[:\s\-]*([A-Z0-9\-]{4,})\b", re.IGNORECASE)
 
 
-def choose_active_sector(sectors: list[dict]) -> int | None:
+def choose_active_sector(sectors: list[dict]) -> str | None:
     """
     Returns the next sector to work on:
     - Prefer the first sector with status IN_PROGRESS
@@ -334,17 +334,28 @@ def choose_active_sector(sectors: list[dict]) -> int | None:
         return None
     for s in sectors:
         if (s.get("status") or "").upper() == "IN_PROGRESS":
-            return int(s["sector"])
+            return str(s["sector"])
     for s in sectors:
         if (s.get("status") or "").upper() == "PENDING":
-            return int(s["sector"])
+            return str(s["sector"])
     return None
 
-def sector_by_id(sectors: list[dict], sector: int) -> dict | None:
-    for s in sectors or []:
-        if int(s.get("sector")) == int(sector):
+# app/utils.py
+
+def sector_by_id(sectors, sector_id):
+    """
+    Return the sector-block from a job's sectors list that matches sector_id.
+    Your sectors are stored as strings (e.g. "1", "2"), so we compare as str.
+    """
+    if not sectors:
+        return None
+
+    target = str(sector_id)
+    for s in sectors:
+        if str(s.get("sector")) == target:
             return s
     return None
+
 
 def all_sectors_done(sectors: list[dict]) -> bool:
     return all((s.get("status") or "").upper() == "DONE" for s in sectors or [])

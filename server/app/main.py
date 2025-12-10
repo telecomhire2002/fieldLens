@@ -46,7 +46,7 @@ def _warmup_ocr():
 # CORS
 # ---------------------------------------
 # Frontend domains
-PROD_DOMAIN = os.getenv("VERCEL_PROD_DOMAIN", "field-lens.vercel.app")  # if you have a custom Vercel domain, put it here
+PROD_DOMAIN = os.getenv("VERCEL_PROD_DOMAIN", "field-lens-sable.vercel.app")  # if you have a custom Vercel domain, put it here
 CUSTOM_WEB_DOMAIN = os.getenv("WEB_APP_DOMAIN")  # e.g. app.yourco.com (optional)
 
 # Local dev (keep for occasional local testing)

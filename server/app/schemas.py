@@ -4,7 +4,7 @@ from typing import List, Optional, Literal, Dict, Any
 PhotoType = str
 
 class SectorProgress(BaseModel):
-    sector: int
+    sector: str
     requiredTypes: List[PhotoType]
     currentIndex: int = 0
     status: Literal["PENDING", "IN_PROGRESS", "DONE"] = "PENDING"
@@ -12,16 +12,28 @@ class SectorProgress(BaseModel):
 class CreateJob(BaseModel):
     workerPhone: str
     siteId: str
-    sector: int
+    sector: str
+    circle: str
+    company: str
 
 class JobOut(BaseModel):
     id: str
     workerPhone: str
     siteId: str
+
+    # NOTE: plural here – matches _job_to_out
     sectors: List[SectorProgress]
+
+    # top-level progress for WhatsApp single-sector flow
+    requiredTypes: List[PhotoType] = Field(default_factory=list)
+    currentIndex: int = 0
+
     status: Literal["PENDING", "IN_PROGRESS", "DONE"]
+
+    circle: str
+    company: str
+
     createdAt: Optional[str] = None
-    # Useful aggregates for UI/export (optional, job-level rollups)
     macId: Optional[str] = None
     rsnId: Optional[str] = None
     azimuthDeg: Optional[float] = None
@@ -29,7 +41,7 @@ class JobOut(BaseModel):
 class PhotoOut(BaseModel):
     id: str
     jobId: str
-    sector: int
+    sector: str
     type: PhotoType
     s3Url: str
     fields: Dict[str, Any]
