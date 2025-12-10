@@ -1,5 +1,5 @@
 # app/models.py
-from typing import List, Literal
+from typing import List, Literal, Optional
 from datetime import datetime
 
 # Note: these are simple dict factories for MongoDB documents.
@@ -8,7 +8,14 @@ from datetime import datetime
 JobStatus = Literal["PENDING", "IN_PROGRESS", "DONE"]
 PhotoStatus = Literal["PASS", "FAIL"]
 
-def new_job(worker_phone: str, required_types: List[str], siteId: str, sector: int):
+def new_job(
+    worker_phone: str,
+    required_types: List[str],
+    siteId: str,
+    sector: str,
+    circle: str,
+    company: str
+):
     now = datetime.utcnow()
     return {
         "workerPhone": worker_phone,     # store already-normalized: "whatsapp:+<digits>"
@@ -17,6 +24,10 @@ def new_job(worker_phone: str, required_types: List[str], siteId: str, sector: i
         "status": "PENDING",             # advanced to IN_PROGRESS on first worker message
         "siteId": siteId,                # identifier grouping multiple sectors for same worker
         "sector": sector,                # single sector per job (frontend groups by siteId)
+        
+        "circle": circle,
+        "company": company,
+
         "createdAt": now,
         "updatedAt": now,
         # Optional fields your pipeline may promote onto the job:

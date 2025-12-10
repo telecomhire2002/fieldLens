@@ -48,3 +48,4 @@ app/static/examples/power_term_a6.jpeg filter=lfs diff=lfs merge=lfs -text
 app/static/examples/roxtec.jpeg filter=lfs diff=lfs merge=lfs -text
 app/static/examples/tilt.jpeg filter=lfs diff=lfs merge=lfs -text
 app/static/examples/Best[[:space:]]Image[[:space:]].jpeg filter=lfs diff=lfs merge=lfs -text
+app/static/examples/a6_tower.jpeg filter=lfs diff=lfs merge=lfs -text

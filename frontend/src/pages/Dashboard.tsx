@@ -75,7 +75,7 @@ export default function Dashboard() {
       siteId: j?.siteId,
       circle:j?.circle,
       company:j?.company,
-      sectors: j?.sectors,
+      sector: j?.sector,
       sectorProgress: j?.sectorProgress,
     }));
   }, [jobs]);

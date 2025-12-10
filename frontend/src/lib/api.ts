@@ -63,6 +63,27 @@ function downloadBlob(data: BlobPart, filename: string, mime?: string) {
   URL.revokeObjectURL(url);
 }
 
+export async function exportFinalExcel(jobId: string, sectorId: string, file: File) {
+  const formData = new FormData();
+  formData.append("sectorId", sectorId);
+  formData.append("mainExcel", file);
+
+  const res = await api.post(`/jobs/${jobId}/export.xlsx`, formData, {
+    responseType: "blob",
+  });
+
+  const blob = new Blob([res.data], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `job_${jobId}_export.xlsx`;
+  a.click();
+  window.URL.revokeObjectURL(url);
+}
+
 /** ---------- API CALLS ---------- */
 export async function fetchJobs(): Promise<BackendJob[]> {
   const { data } = await api.get("/jobs");
@@ -133,34 +154,27 @@ export async function deleteJob(jobId: string): Promise<void> {
   await api.delete(`/jobs/${encodeURIComponent(jobId)}`);
 }
 
-export async function downloadJobXlsx(id: string) {
-  const { data } = await api.get(`/jobs/${id}/export.xlsx`, {
+
+
+export async function downloadJobXlsxHOTO(jobId: string, sectorId: string, file: File) {
+  const formData = new FormData();
+  formData.append("sectorId", sectorId);
+  formData.append("mainExcel", file);
+
+  const res = await api.post(`/jobs/${jobId}/export.csv`, formData, {
     responseType: "blob",
   });
-  const url = window.URL.createObjectURL(new Blob([data]));
-  const link = document.createElement("a");
-  link.href = url;
-  link.setAttribute("download", `job_${id}.xlsx`);
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-}
 
-
-
-
-
-export async function downloadJobXlsxWithImages(id: string) {
-  const { data } = await api.get(`/jobs/${id}/export_with_images.xlsx`, {
-    responseType: "blob",
+  const blob = new Blob([res.data], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   });
-  const url = window.URL.createObjectURL(new Blob([data]));
-  const link = document.createElement("a");
-  link.href = url;
-  link.setAttribute("download", `job_${id}_with_images.xlsx`);
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
+
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `job_${jobId}_export.xlsx`;
+  a.click();
+  window.URL.revokeObjectURL(url);
 }
 
 export async function getSectorTemplate(sector: number) {

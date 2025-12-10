@@ -9,14 +9,13 @@ import { Download, Edit3, Image as ImageIcon, ImageOff } from "lucide-react";
 
 import {
   fetchJobDetail,
-  downloadJobXlsx,
-  downloadJobXlsxWithImages,
   // NEW sector-wise helpers (ensure these exist in api.ts)
   downloadSectorWorkbook,
   downloadJobZip,
   type JobDetail,
   type PhotoItem,
   api,
+  exportFinalExcel,
 } from "@/lib/api";
 
 type Props = {
@@ -206,15 +205,15 @@ export default function FilePreviewModal({ isOpen, taskId, onClose }: Props) {
       Array.isArray(rt) && rt.length
         ? rt.join(", ")
         : Array.isArray(j.requiredTypes)
-        ? j.requiredTypes.join(", ")
-        : "—";
+          ? j.requiredTypes.join(", ")
+          : "—";
 
     const sectorDisplay =
       sectorBlock?.sector != null && sectorBlock?.sector !== ""
         ? String(sectorBlock.sector)
         : j.sector != null
-        ? String(j.sector)
-        : "—";
+          ? String(j.sector)
+          : "—";
 
     const statusDisplay = (sectorBlock?.status ?? j.status ?? "—") as string;
 
@@ -222,6 +221,8 @@ export default function FilePreviewModal({ isOpen, taskId, onClose }: Props) {
       { label: "Job ID", value: taskId },
       { label: "Worker Phone", value: j.workerPhone ?? "—" },
       { label: "Site ID", value: j.siteId ?? "—" },
+      { label: "MAC ID", value: j.macId ?? "—" },
+      { label: "RSN", value: j.rsnId ?? "—" },
       { label: "Status", value: statusDisplay },
       { label: "Sector", value: sectorDisplay },
       { label: "Required Types", value: reqTypesDisplay },
@@ -231,8 +232,8 @@ export default function FilePreviewModal({ isOpen, taskId, onClose }: Props) {
           typeof idx === "number"
             ? String(idx)
             : typeof j.currentIndex === "number"
-            ? String(j.currentIndex)
-            : "—",
+              ? String(j.currentIndex)
+              : "—",
       },
       { label: "Total Photos", value: totalPhotos },
       { label: "Created At", value: created },
@@ -424,28 +425,35 @@ export default function FilePreviewModal({ isOpen, taskId, onClose }: Props) {
                 <h3 className="font-medium">Job Report Data</h3>
                 <div className="flex items-center gap-2 flex-wrap">
                   {/* Whole Job */}
-                  <Button size="sm" variant="outline" onClick={() => downloadJobXlsx(taskId)} disabled={!data || loading}>
-                    <Download className="w-4 h-4 mr-2" />
-                    Excel (All)
-                  </Button>
-                  <Button size="sm" variant="outline" onClick={() => downloadJobXlsxWithImages(taskId)} disabled={!data || loading}>
-                    <Download className="w-4 h-4 mr-2" />
-                    Excel + Images (All)
-                  </Button>
-
-                  {/* Sector-wise — enabled only when a sector is selected */}
                   <Button
                     size="sm"
-                    onClick={() => {
-                      if (!taskId || !selectedSector) return;
-                      // pass taskId and the selected sector string to the API helper
-                      downloadSectorWorkbook();
-                    }}
+                    variant="default"
+                    onClick={() => document.getElementById("excel-main-upload")?.click()}
                     disabled={!data || loading || !canSectorDownload}
                   >
                     <Download className="w-4 h-4 mr-2" />
-                    Excel (Sector)
+                    Export Final Excel
                   </Button>
+
+                  <input
+                    id="excel-main-upload"
+                    type="file"
+                    accept=".xlsx"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file || !selectedSector) return;
+                      try {
+                        await exportFinalExcel(taskId, selectedSector, file);
+                      } catch (err) {
+                        console.error(err);
+                        alert("Export failed");
+                      } finally {
+                        (e.target as HTMLInputElement).value = "";
+                      }
+                    }}
+                  />
+
                 </div>
               </div>
 
@@ -465,10 +473,10 @@ export default function FilePreviewModal({ isOpen, taskId, onClose }: Props) {
                           {typeof row.value === "string"
                             ? row.value
                             : Array.isArray(row.value)
-                            ? row.value.join(", ")
-                            : row.value != null
-                            ? String(row.value)
-                            : "—"}
+                              ? row.value.join(", ")
+                              : row.value != null
+                                ? String(row.value)
+                                : "—"}
                         </td>
                       </tr>
                     ))}
