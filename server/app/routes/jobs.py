@@ -234,7 +234,7 @@ def export_csv(
             sec_num = int(raw_sec[3:])
 
         sector_norm = f"Sec{sec_num}" if sec_num else raw_sec
-
+        azimuth = j.get("azimuthDeg") or ""
         mac = j.get("macId") or ""
         rsn = j.get("rsnId") or ""
 
@@ -246,7 +246,7 @@ def export_csv(
             if not rsn and f.get("rsn"):
                 rsn = f["rsn"]
 
-        sec_info.append({"sector": sector_norm, "mac": mac, "rsn": rsn})
+        sec_info.append({"sector": sector_norm, "mac": mac, "rsn": rsn, "azimuth":azimuth})
 
     # -------- 3. Read uploaded Main Excel --------
     try:
@@ -267,6 +267,9 @@ def export_csv(
     a6_col = find_c("a6neid")
     gis_col = find_c("gis sector_id", "sector")
     a6ip_col = find_c("a6 ip")  # IPv6 pool
+    a6hieght_col = find_c("enb antenna height")
+    a6tilt_col = find_c("proposed a6 tilt")
+    sitename_col = find_c("site name")
 
     if not site_col:
         raise HTTPException(400, "Site / eNBsiteID not found in Main Excel")
@@ -277,7 +280,7 @@ def export_csv(
         match = df[df_site.str.contains(site_id, case=False, na=False)]
 
     if match.empty:
-        base_pmp = base_a6 = base_gis = base_a6ip = ""
+        base_pmp = base_a6 = base_gis = base_a6ip = base_a6height = base_a6tilt = ""
     else:
         r = match.iloc[0]
 
@@ -288,6 +291,47 @@ def export_csv(
         base_a6 = safe(a6_col)
         base_gis = safe(gis_col)
         base_a6ip = safe(a6ip_col)
+        base_a6height = safe(a6hieght_col)
+        base_a6tilt = safe(a6tilt_col)
+        base_sitename = safe(sitename_col)
+
+    def _sec_sort_key(x):
+        m = re.findall(r"\d+", str(x.get("sector", "")))
+        return int(m[0]) if m else 999
+    def as_int_str(v):
+        """
+        Converts 10 / 10.0 / '10.0' → '10'
+        Returns '' for empty/NaN
+        """
+        if v is None:
+            return ""
+        try:
+            if pd.isna(v):
+                return ""
+            return str(int(float(v)))
+        except Exception:
+            return str(v).strip()
+
+
+    sec_info_sorted = sorted(sec_info, key=_sec_sort_key)
+    sector_count = len(sec_info_sorted)
+
+    # --- Azimuth: comma-separated across sectors (skip blanks) ---
+    azimuth_values = [str(d.get("azimuth", "")).strip() for d in sec_info_sorted]
+    azimuth_values = [v for v in azimuth_values if v]  # remove empty
+    azimuth_combined = ", ".join(azimuth_values)
+
+    # --- Height / Tilt: repeat same base value N times ---
+    def repeat_base(val: str, n: int) -> str:
+        v = as_int_str(val)
+        if not v or n <= 0:
+            return ""
+        return ", ".join([v] * n)
+
+    a6height_combined = repeat_base(base_a6height, sector_count)
+    a6tilt_combined   = repeat_base(base_a6tilt, sector_count)
+
+
 
     # -------- 4. Helper – A6 & IPv6 per sector --------
     def a6_for_sector(sec: str | None) -> str:
@@ -383,6 +427,9 @@ def export_csv(
     ws.append([colA, colB, colC])
 
     ipv6_row_seen = False  # so only first IPv6 row gets comma-separated list
+    azimuth_row_seen = False
+    a6height_row_seen = False
+    a6tilt_row_seen = False
 
     for _, row in template_df.iterrows():
         hc = "" if pd.isna(row[colA]) else str(row[colA]).strip()
@@ -395,7 +442,8 @@ def export_csv(
         # PMP SAP ID
         if "pmp sap id" in lower:
             new_val = base_pmp
-
+        elif "site/location name" in lower or "site/location address" in lower:
+            new_val = base_sitename
         # A6 NE ID per sector
         elif "a6 ne id" in lower and "sect" in lower:
             sec_target = sector_from_hc(hc)
@@ -421,6 +469,30 @@ def export_csv(
         elif "ipv6 pool address" in lower:
             sec_target = sector_from_hc(hc)
             new_val = a6ip_for_sector(sec_target)
+
+                # --- Azimuth: one combined cell (comma-separated for all sectors) ---
+        elif "base terminal actual azimuth (in degree)" in lower:
+            if not azimuth_row_seen:
+                new_val = azimuth_combined
+                azimuth_row_seen = True
+            else:
+                new_val = ""  # keep other azimuth rows blank
+
+        # --- Proposed A6 Height: one combined cell (repeat value N times) ---
+        elif "base terminal actual height (in mtr)" in lower:
+            if not a6height_row_seen:
+                new_val = a6height_combined
+                a6height_row_seen = True
+            else:
+                new_val = ""
+
+        # --- Proposed A6 Tilt: one combined cell (repeat value N times) ---
+        elif "base terminal actual tilt (in degree)" in lower:
+            if not a6tilt_row_seen:
+                new_val = a6tilt_combined
+                a6tilt_row_seen = True
+            else:
+                new_val = ""
 
 
         # GIS Sector ID
@@ -478,13 +550,15 @@ def export_csv(
     out = BytesIO()
     wb.save(out)
     out.seek(0)
-
+    filename = f"A6_HOTO_{base_sitename}.xlsx"
     return Response(
         content=out.getvalue(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={
-            "Content-Disposition": f'attachment; filename="site_{site_id}_book3.xlsx"'
-        },
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "X-Filename": filename,  # ✅ easy for frontend to read
+        "Access-Control-Expose-Headers": "Content-Disposition, X-Filename",  # ✅ IMPORTANT
+    },
     )
 
 
@@ -544,6 +618,7 @@ async def export_xlsx(
 
         # create final normalized format
         sector_norm = f"Sec{sec_num}" if sec_num else raw_sec
+        azimuth = j.get("azimuthDeg") or ""
         mac = j.get("macId") or ""
         rsn = j.get("rsnId") or ""
 
@@ -555,7 +630,7 @@ async def export_xlsx(
                 mac = f["macId"]
             if not rsn and f.get("rsn"):
                 rsn = f["rsn"]
-        sec_info.append({"sector": sector_norm, "mac": mac, "rsn": rsn})
+        sec_info.append({"sector": sector_norm, "mac": mac, "rsn": rsn, "azimuth": azimuth})
 
 
     # -------- 3. Read uploaded Main Excel --------
@@ -577,6 +652,9 @@ async def export_xlsx(
     a6_col = find_c("a6neid")
     gis_col = find_c("gis sector_id", "sector")
     a6ip_col = find_c("a6 ip")
+    a6hieght_col = find_c("enb antenna height")
+    a6tilt_col = find_c("proposed a6 tilt")
+    sitename_col = find_c("site name")
 
     if not site_col:
         raise HTTPException(400, "Site / eNBsiteID not found in Main Excel")
@@ -587,7 +665,7 @@ async def export_xlsx(
         match = df[df_site.str.contains(site_id, case=False, na=False)]
 
     if match.empty:
-        base_pmp = base_a6 = base_gis = ""
+        base_pmp = base_a6 = base_gis = base_a6ip = base_a6height = base_a6tilt = ""
     else:
         r = match.iloc[0]
 
@@ -598,6 +676,33 @@ async def export_xlsx(
         base_a6 = safe(a6_col)
         base_gis = safe(gis_col)
         base_a6ip = safe(a6ip_col)
+        base_a6height = safe(a6hieght_col)
+        base_a6tilt = safe(a6tilt_col)
+        base_sitename = safe(sitename_col)
+
+
+    def _sec_sort_key(x):
+        m = re.findall(r"\d+", str(x.get("sector", "")))
+        return int(m[0]) if m else 999
+
+    sec_info_sorted = sorted(sec_info, key=_sec_sort_key)
+    sector_count = len(sec_info_sorted)
+
+    # --- Azimuth: comma-separated across sectors (skip blanks) ---
+    azimuth_values = [str(d.get("azimuth", "")).strip() for d in sec_info_sorted]
+    azimuth_values = [v for v in azimuth_values if v]  # remove empty
+    azimuth_combined = ", ".join(azimuth_values)
+
+    # --- Height / Tilt: repeat same base value N times ---
+    def repeat_base(val: str, n: int) -> str:
+        v = (val or "").strip()
+        if not v or n <= 0:
+            return ""
+        return ", ".join([v] * n)
+
+    a6height_combined = repeat_base(base_a6height, sector_count)
+
+    a6tilt_combined   = repeat_base(base_a6tilt, sector_count)
     def a6ip_for_sector(sec: str):
         if not base_a6ip:
             return ""
@@ -629,7 +734,6 @@ async def export_xlsx(
 
         new_last = base_last + diff
         prefix = base_a6ip[:-len(str(base_last))]
-        print(" A6-IP prefix:", prefix, " base_last:", base_last, " new_last:", new_last)
         return prefix + str(new_last)
 
 
@@ -713,7 +817,9 @@ async def export_xlsx(
     ws = wb.active
     ws.title = "ATP11A"
     ws.append([colA, colB, colC])  # header without Business Rule
-
+    azimuth_row_seen = False
+    a6height_row_seen = False
+    a6tilt_row_seen = False
     for _, row in template_df.iterrows():
         hc = "" if pd.isna(row[colA]) else str(row[colA]).strip()
         src = "" if pd.isna(row[colB]) else str(row[colB]).strip()
@@ -746,7 +852,8 @@ async def export_xlsx(
         # Replace only dynamic values
         if "pmp sap id" in lower:
             new_val = base_pmp
-
+        elif "site/location name" in lower or "site/location address" in lower:
+            new_val = base_sitename
         elif "a6 ne id" in lower:
             # A6 column logic considers sector from column B if available
            
@@ -763,7 +870,6 @@ async def export_xlsx(
                 ip_val = a6ip_for_sector(sec)
                 if ip_val:
                     ip_list.append(ip_val)
-            print(" IP list:", ip_list)
             # put everything in ONE cell
             new_val = ", ".join(ip_list)
 
@@ -775,16 +881,38 @@ async def export_xlsx(
         elif "enb sap id" in lower or "enb/css site sap id" in lower:
             new_val = base_gis
 
+        elif "base radio planned azimuth (in degree) (sect0,sect1,sect2)" in lower or "base radio actual azimuth (in degree) (sect0,sect1,sect2)" in lower:
+            if not azimuth_row_seen:
+                new_val = azimuth_combined
+            else:
+                new_val = ""  # keep other azimuth rows blank
+
+        # --- Proposed A6 Height: one combined cell (repeat value N times) ---
+        elif "base radio planned height (in mtr) (sect0,sect1,sect2)" in lower or "base radio actual height (in mtr) (sect0,sect1,sect2)" in lower:
+            if not a6height_row_seen:
+                new_val = a6height_combined
+                print(" A6 Height combined:", new_val)
+            else:
+                new_val = ""
+
+        # --- Proposed A6 Tilt: one combined cell (repeat value N times) ---
+        elif "base radio actual tilt (in degree) (sect0,sect1,sect2)" in lower:
+            if not a6tilt_row_seen:
+                new_val = a6tilt_combined
+                a6tilt_row_seen = True
+            else:
+                new_val = ""
+
         elif "mac address" in lower:
             sec_target = expected_sector
             mac = next((d["mac"] for d in sec_info if d["sector"] == sec_target), "")
             new_val = mac
-            print(" Selected MAC:", new_val)
+            
         elif "serial number" in lower:
             sec_target = expected_sector
             rsn = next((d["rsn"] for d in sec_info if d["sector"] == sec_target), "")
             new_val = rsn
-            print(" Selected RSN:", new_val)
+            
 
         elif "circle" in lower:
             new_val = circle
@@ -822,11 +950,15 @@ async def export_xlsx(
     out = BytesIO()
     wb.save(out)
     out.seek(0)
-
+    filename = f"A6_{base_sitename}.xlsx"
     return Response(
         content=out.getvalue(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="site_{site_id}_export.xlsx"'}
+        headers={
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "X-Filename": filename,  # ✅ easy for frontend to read
+        "Access-Control-Expose-Headers": "Content-Disposition, X-Filename",  # ✅ IMPORTANT
+    },
     )
 
 

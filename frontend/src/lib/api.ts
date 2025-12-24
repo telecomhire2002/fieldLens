@@ -21,8 +21,8 @@ export type BackendJob = {
   workerPhone: string;
   siteId: string;
   sectors: SectorBlock[];
-  circle:string
-  company:string
+  circle: string
+  company: string
   status: "PENDING" | "IN_PROGRESS" | "DONE" | "FAILED";
   createdAt?: string | null;
   macId?: string | null;
@@ -72,15 +72,35 @@ export async function exportFinalExcel(jobId: string, sectorId: string, file: Fi
     responseType: "blob",
   });
 
+  let filename =
+    (res.headers["x-filename"] as string) ||
+    (res.headers["content-disposition"] as string) ||
+    "export.xlsx";
+
+  // If we got Content-Disposition, extract filename from it
+  if (filename.includes("filename=")) {
+    const m = filename.match(/filename\*?=(?:UTF-8'')?["']?([^"';\n]+)["']?/i);
+    if (m?.[1]) filename = decodeURIComponent(m[1]);
+  }
+
+  // Ensure extension
+  if (!filename.toLowerCase().endsWith(".xlsx")) {
+    filename = `${filename}.xlsx`;
+  }
+
   const blob = new Blob([res.data], {
-    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    type:
+      res.headers["content-type"] ||
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   });
 
   const url = window.URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `job_${jobId}_export.xlsx`;
+  a.download = filename;
+  document.body.appendChild(a);
   a.click();
+  a.remove();
   window.URL.revokeObjectURL(url);
 }
 
@@ -164,17 +184,39 @@ export async function downloadJobXlsxHOTO(jobId: string, file: File) {
     responseType: "blob",
   });
 
+  // Axios header keys are lowercase
+  let filename =
+    (res.headers["x-filename"] as string) ||
+    (res.headers["content-disposition"] as string) ||
+    "export.xlsx";
+
+  // If we got Content-Disposition, extract filename from it
+  if (filename.includes("filename=")) {
+    const m = filename.match(/filename\*?=(?:UTF-8'')?["']?([^"';\n]+)["']?/i);
+    if (m?.[1]) filename = decodeURIComponent(m[1]);
+  }
+
+  // Ensure extension
+  if (!filename.toLowerCase().endsWith(".xlsx")) {
+    filename = `${filename}.xlsx`;
+  }
+
   const blob = new Blob([res.data], {
-    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    type:
+      res.headers["content-type"] ||
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   });
 
   const url = window.URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `job_${jobId}_export.xlsx`;
+  a.download = filename;
+  document.body.appendChild(a);
   a.click();
+  a.remove();
   window.URL.revokeObjectURL(url);
 }
+
 
 export async function getSectorTemplate(sector: number) {
   const { data } = await api.get(`/jobs/templates/sector/${sector}`);
