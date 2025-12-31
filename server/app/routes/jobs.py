@@ -270,6 +270,7 @@ def export_csv(
     a6hieght_col = find_c("enb antenna height")
     a6tilt_col = find_c("proposed a6 tilt")
     sitename_col = find_c("site name")
+    az_col = find_c("azimuth")
 
     if not site_col:
         raise HTTPException(400, "Site / eNBsiteID not found in Main Excel")
@@ -289,15 +290,76 @@ def export_csv(
 
         base_pmp = safe(pmp_col)
         base_a6 = safe(a6_col)
-        base_gis = safe(gis_col)
+        # base_gis = safe(gis_col)
+        base_enbsiteId = safe(site_col)
         base_a6ip = safe(a6ip_col)
         base_a6height = safe(a6hieght_col)
         base_a6tilt = safe(a6tilt_col)
         base_sitename = safe(sitename_col)
+    
+    # -------- NEW: Build Azimuth map from Main Excel (sector-wise) --------
+    azimuth_map = {}  # {"Sec1": "42", "Sec2": "120", ...}
+
+    if (not match.empty) and gis_col and az_col:
+        # Only rows for this site_id
+        m2 = match.copy()
+
+    def sec_from_gis(val: str):
+        """
+        Extract sector number from strings like:
+        I-MP-GDWN-ENB-9034-1  -> Sec1
+        """
+        s = str(val or "").strip()
+        if not s:
+            return None
+        # sector number usually at the end after '-'
+        m = re.search(r"(\d+)\s*$", s)
+        if not m:
+            return None
+        return f"Sec{int(m.group(1))}"
+
+    for _, rr in m2.iterrows():
+
+        sec = sec_from_gis(rr.get(gis_col))
+        azv = rr.get(az_col)
+
+        
+
+        if not sec:
+            continue
+
+        az_str = "" if pd.isna(azv) else str(azv).strip()
+        if not az_str:
+            continue
+
+        # keep first non-empty azimuth per sector
+        if sec not in azimuth_map:
+            azimuth_map[sec] = az_str
+
 
     def _sec_sort_key(x):
         m = re.findall(r"\d+", str(x.get("sector", "")))
         return int(m[0]) if m else 999
+
+    sec_info_sorted = sorted(sec_info, key=_sec_sort_key)
+    sector_count = len(sec_info_sorted)
+
+    # --- Azimuth: comma-separated across sectors (skip blanks) ---
+    # --- Azimuth from Main Excel: comma-separated sector-wise (Sec1, Sec2, Sec3...) ---
+    azimuth_values = []
+    for d in sec_info_sorted:
+        sec = d.get("sector")
+        v = (azimuth_map.get(sec, "") or "").strip()
+        if v:
+            azimuth_values.append(v)
+
+    azimuth_combined = ", ".join(azimuth_values)
+
+
+
+
+
+
     def as_int_str(v):
         """
         Converts 10 / 10.0 / '10.0' → '10'
@@ -314,13 +376,9 @@ def export_csv(
 
 
     sec_info_sorted = sorted(sec_info, key=_sec_sort_key)
+
+
     sector_count = len(sec_info_sorted)
-
-    # --- Azimuth: comma-separated across sectors (skip blanks) ---
-    azimuth_values = [str(d.get("azimuth", "")).strip() for d in sec_info_sorted]
-    azimuth_values = [v for v in azimuth_values if v]  # remove empty
-    azimuth_combined = ", ".join(azimuth_values)
-
     # --- Height / Tilt: repeat same base value N times ---
     def repeat_base(val: str, n: int) -> str:
         v = as_int_str(val)
@@ -496,8 +554,8 @@ def export_csv(
 
 
         # GIS Sector ID
-        elif "gis sector" in lower:
-            new_val = base_gis
+        # elif "gis sector" in lower:
+        #     new_val = base_gis
 
         # eNB SAP ID (if you want to copy GIS or separate col, adjust here)
         elif "enb/css site sap id" in lower:
@@ -506,10 +564,10 @@ def export_csv(
             if sec_target:
                 # sect1 → suffix -1
                 sec_num = int(re.findall(r"\d+", sec_target)[0])
-                new_val = f"{base_gis}-{sec_num}"
+                new_val = f"{base_enbsiteId}-{sec_num}"
             else:
                 # main row without sector suffix
-                new_val = base_gis
+                new_val = base_enbsiteId
 
 
         # Circle
@@ -655,6 +713,7 @@ async def export_xlsx(
     a6hieght_col = find_c("enb antenna height")
     a6tilt_col = find_c("proposed a6 tilt")
     sitename_col = find_c("site name")
+    az_col = find_c("azimuth")
 
     if not site_col:
         raise HTTPException(400, "Site / eNBsiteID not found in Main Excel")
@@ -674,11 +733,51 @@ async def export_xlsx(
 
         base_pmp = safe(pmp_col)
         base_a6 = safe(a6_col)
-        base_gis = safe(gis_col)
+        # base_gis = safe(gis_col)
+        base_enbsiteId = safe(site_col)
         base_a6ip = safe(a6ip_col)
         base_a6height = safe(a6hieght_col)
         base_a6tilt = safe(a6tilt_col)
         base_sitename = safe(sitename_col)
+
+    # -------- NEW: Build Azimuth map from Main Excel (sector-wise) --------
+    azimuth_map = {}  # {"Sec1": "42", "Sec2": "120", ...}
+
+    if (not match.empty) and gis_col and az_col:
+        # Only rows for this site_id
+        m2 = match.copy()
+
+    def sec_from_gis(val: str):
+        """
+        Extract sector number from strings like:
+        I-MP-GDWN-ENB-9034-1  -> Sec1
+        """
+        s = str(val or "").strip()
+        if not s:
+            return None
+        # sector number usually at the end after '-'
+        m = re.search(r"(\d+)\s*$", s)
+        if not m:
+            return None
+        return f"Sec{int(m.group(1))}"
+
+    for _, rr in m2.iterrows():
+
+        sec = sec_from_gis(rr.get(gis_col))
+        azv = rr.get(az_col)
+
+        
+
+        if not sec:
+            continue
+
+        az_str = "" if pd.isna(azv) else str(azv).strip()
+        if not az_str:
+            continue
+
+        # keep first non-empty azimuth per sector
+        if sec not in azimuth_map:
+            azimuth_map[sec] = az_str
 
 
     def _sec_sort_key(x):
@@ -689,9 +788,16 @@ async def export_xlsx(
     sector_count = len(sec_info_sorted)
 
     # --- Azimuth: comma-separated across sectors (skip blanks) ---
-    azimuth_values = [str(d.get("azimuth", "")).strip() for d in sec_info_sorted]
-    azimuth_values = [v for v in azimuth_values if v]  # remove empty
+    # --- Azimuth from Main Excel: comma-separated sector-wise (Sec1, Sec2, Sec3...) ---
+    azimuth_values = []
+    for d in sec_info_sorted:
+        sec = d.get("sector")
+        v = (azimuth_map.get(sec, "") or "").strip()
+        if v:
+            azimuth_values.append(v)
+
     azimuth_combined = ", ".join(azimuth_values)
+   
 
     # --- Height / Tilt: repeat same base value N times ---
     def repeat_base(val: str, n: int) -> str:
@@ -879,7 +985,7 @@ async def export_xlsx(
             new_val = base_gis
 
         elif "enb sap id" in lower or "enb/css site sap id" in lower:
-            new_val = base_gis
+            new_val = base_enbsiteId
 
         elif "base radio planned azimuth (in degree) (sect0,sect1,sect2)" in lower or "base radio actual azimuth (in degree) (sect0,sect1,sect2)" in lower:
             if not azimuth_row_seen:
@@ -891,7 +997,6 @@ async def export_xlsx(
         elif "base radio planned height (in mtr) (sect0,sect1,sect2)" in lower or "base radio actual height (in mtr) (sect0,sect1,sect2)" in lower:
             if not a6height_row_seen:
                 new_val = a6height_combined
-                print(" A6 Height combined:", new_val)
             else:
                 new_val = ""
 

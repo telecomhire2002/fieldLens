@@ -1,10 +1,13 @@
-# app/routes/whatsapp.py
 import os
+import re
 import traceback
-from typing import Tuple, List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any
 from datetime import datetime
+from io import BytesIO
+
 import cv2
 import httpx
+from bson import ObjectId
 from fastapi import APIRouter, Depends, Request, Response, Form, File, UploadFile, BackgroundTasks
 from fastapi.responses import JSONResponse, PlainTextResponse
 from twilio.twiml.messaging_response import MessagingResponse
@@ -17,27 +20,31 @@ from app.utils import (
     normalize_phone,
     type_prompt,
     type_example_url,
-    is_validated_type,   # This can stay
+    is_validated_type,   # can stay
     twilio_client,       # Twilio REST client if configured
     TWILIO_WHATSAPP_FROM # whatsapp:from number
 )
 
+# NOTE:
+# You already have these in your project somewhere (used in debug route).
+# Keep them as-is; if they are in another module, import them there.
+# from app.services.jobs import new_job
+
 router = APIRouter()
 
 # ---------------------------
-# SIMPLIFIED HELPERS (single-sector model)
+# SIMPLIFIED HELPERS (single-sector job)
 # ---------------------------
 
 def _current_expected_type_for_job(job: Dict[str, Any]) -> Optional[str]:
     """Return the next required type for this job."""
     if not job:
         return None
-    # Read from top-level fields
     idx = int(job.get("currentIndex", 0) or 0)
     req = job.get("requiredTypes", []) or []
     if 0 <= idx < len(req):
         return req[idx]
-    return None # Job is complete
+    return None  # Job is complete
 
 def is_job_done(job: Dict[str, Any]) -> bool:
     """Check if a single job is complete."""
@@ -45,11 +52,9 @@ def is_job_done(job: Dict[str, Any]) -> bool:
         return True
     if job.get("status") == "DONE":
         return True
-    # Check if index is at the end
     idx = int(job.get("currentIndex", 0) or 0)
     req = job.get("requiredTypes", []) or []
     return idx >= len(req)
-
 
 def _downscale_for_ocr(bgr, max_side: int = 1280):
     """Keep aspect; limit longest side to max_side for faster OCR."""
@@ -60,6 +65,25 @@ def _downscale_for_ocr(bgr, max_side: int = 1280):
     scale = max_side / float(m)
     nh, nw = int(h * scale), int(w * scale)
     return cv2.resize(bgr, (nw, nh), interpolation=cv2.INTER_AREA)
+
+# ---------------------------
+# Worker selection session helpers
+# ---------------------------
+
+def get_session(db, workerPhone: str) -> Dict[str, Any]:
+    return db.worker_sessions.find_one({"workerPhone": workerPhone}) or {}
+
+def set_session(db, workerPhone: str, **updates):
+    updates["workerPhone"] = workerPhone
+    updates["updatedAt"] = datetime.utcnow()
+    db.worker_sessions.update_one(
+        {"workerPhone": workerPhone},
+        {"$set": updates},
+        upsert=True
+    )
+
+def clear_session(db, workerPhone: str):
+    db.worker_sessions.delete_one({"workerPhone": workerPhone})
 
 # ---------------------------
 # Twilio / media utilities
@@ -100,13 +124,13 @@ def _safe_example_list(example_url: Optional[str]) -> Optional[List[str]]:
     return [s] if s.lower().startswith(("http://", "https://")) else None
 
 # ---------------------------
-# Background processor (Simplified)
+# Background processor (single job)
 # ---------------------------
 
 def _process_and_notify(
     db,
     worker_number: str,
-    job_id: str, # We only need job_id
+    job_id: str,
     image_bytes: bytes
 ):
     """
@@ -115,14 +139,20 @@ def _process_and_notify(
     """
     try:
         # 1) Reload fresh job
-        job = db.jobs.find_one({"_id": job_id})
+        try:
+            oid = ObjectId(job_id) if not isinstance(job_id, ObjectId) else job_id
+        except Exception:
+            print("[BG] Invalid job_id; abort.")
+            return
+
+        job = db.jobs.find_one({"_id": oid})
         if not job:
             print("[BG] Job missing; abort.")
             return
 
         # 2) Expected type for this job
         expected = _current_expected_type_for_job(job)
-        job_sector = job.get("sector") # Get the job's sector
+        job_sector = job.get("sector")
 
         # 3) Decode + downscale (speed)
         img = load_bgr(image_bytes)
@@ -136,7 +166,7 @@ def _process_and_notify(
             for p in db.photos.find(
                 {
                     "jobId": str(job["_id"]),
-                    "sector": job_sector, 
+                    "sector": job_sector,
                     "type": (expected or "").upper(),
                     "status": {"$in": ["PASS", "FAIL"]},
                 },
@@ -152,7 +182,7 @@ def _process_and_notify(
             existing_phashes=prev_phashes
         )
 
-        # Promote important fields to job-level (this logic is fine)
+        # Promote important fields to job-level
         fields = result.get("fields") or {}
         updates: Dict[str, Any] = {}
         if fields.get("macId"):
@@ -189,7 +219,7 @@ def _process_and_notify(
                 {"_id": job["_id"]},
                 {"$inc": {"currentIndex": 1}}
             )
-            job = db.jobs.find_one({"_id": job["_id"]}) # Reload
+            job = db.jobs.find_one({"_id": job["_id"]})  # Reload
 
             # If the job finished, mark it DONE
             if is_job_done(job):
@@ -200,8 +230,6 @@ def _process_and_notify(
                 job = db.jobs.find_one({"_id": job["_id"]})
 
         # 8) Compose outbound message
-        text = ""
-        media = None
         if (result.get("status") or "").upper() == "PASS":
             next_expected = _current_expected_type_for_job(job)
             if next_expected is None:
@@ -210,12 +238,12 @@ def _process_and_notify(
                     "✅ सेक्टर पूरा हो गया। धन्यवाद!\n\n"
                     "Send 'hy' to start your next sector."
                 )
+                media = None
             else:
                 prompt, example = type_prompt(next_expected), type_example_url(next_expected)
                 text = f"✅ {result_type} verified.\nNext: {prompt}\nअब अगली फोटो भेजें।"
                 media = example
         else:
-            # Retake path
             fallback_type = expected or result_type
             prompt, example = type_prompt(fallback_type), type_example_url(fallback_type)
             reasons = "; ".join(result.get("reason") or []) or "needs retake"
@@ -226,7 +254,7 @@ def _process_and_notify(
             )
             media = example
 
-        # 9) Send proactive WhatsApp message (this logic is fine)
+        # 9) Send proactive WhatsApp message
         if twilio_client and TWILIO_WHATSAPP_FROM:
             to_number = worker_number if worker_number.startswith("whatsapp:") else f"whatsapp:{worker_number}"
             kwargs = {"from_": TWILIO_WHATSAPP_FROM, "to": to_number, "body": text}
@@ -243,14 +271,17 @@ def _process_and_notify(
         traceback.print_exc()
 
 # ---------------------------
-# Webhook (Revised Selection Logic)
+# Webhook (SITE -> SECTOR selection)
 # ---------------------------
 
 @router.post("/whatsapp/webhook")
 async def whatsapp_webhook(request: Request, background: BackgroundTasks, db=Depends(get_db)):
     """
     WhatsApp webhook (Twilio). Handles text prompts and image uploads.
-    - Selects job based on unique sector ID.
+    Selection order:
+    1) Ask Site ID
+    2) Then ask Sector ID (within that site)
+    3) Then proceed with photo flow
     """
     # Parse body (Twilio sends form-encoded)
     try:
@@ -266,96 +297,128 @@ async def whatsapp_webhook(request: Request, background: BackgroundTasks, db=Dep
     from_num = normalize_phone(from_param)
     media_count = int(form.get("NumMedia") or 0)
     user_message_body = (form.get("Body") or "").strip()
-    
+
     print(f"[INCOMING] From: {from_num} NumMedia: {media_count} Body: '{user_message_body}'")
 
-    # --- REVISED JOB & SECTOR SELECTION LOGIC ---
+    # Allow reset anytime
+    if user_message_body.lower() in {"reset", "restart", "clear"}:
+        clear_session(db, from_num)
+        return build_twiml_reply(
+            "✅ Selection reset.\nNow send Site ID.\n"
+            "✅ चयन रीसेट हो गया। अब Site ID भेजें।"
+        )
 
-    # 1. Find ALL active jobs (PENDING or IN_PROGRESS) for this worker
-    all_active_jobs_for_worker = list(db.jobs.find({
+    # 1) Find all active jobs for this worker
+    active_jobs = list(db.jobs.find({
         "workerPhone": from_num,
         "status": {"$in": ["PENDING", "IN_PROGRESS"]}
-    }).limit(10))
-    
-    # 2. Try to find the *currently selected* job (status: IN_PROGRESS)
+    }).limit(50))
+
+    # 2) Prefer an IN_PROGRESS job if it exists and not done
     current_job: Optional[Dict[str, Any]] = None
-    for j in all_active_jobs_for_worker:
-        if j.get("status") == "IN_PROGRESS":
-            # If it's IN_PROGRESS but actually done, ignore it
-            if not is_job_done(j):
-                current_job = j
-                break
+    for j in active_jobs:
+        if j.get("status") == "IN_PROGRESS" and not is_job_done(j):
+            current_job = j
+            break
 
-    # If no 'IN_PROGRESS' job was found, we need to select one.
+    # If IN_PROGRESS is done, mark done and continue selection
+    if current_job and is_job_done(current_job):
+        db.jobs.update_one({"_id": current_job["_id"]}, {"$set": {"status": "DONE"}})
+        current_job = None
+
+    # 3) If no selected job, do Site -> Sector selection using session
     if not current_job:
-        # Filter out any jobs that might be IN_PROGRESS but are factually done
-        pending_jobs = [j for j in all_active_jobs_for_worker if j.get("status") == "PENDING" and not is_job_done(j)]
-        num_jobs_found = len(pending_jobs)
+        pending_jobs = [j for j in active_jobs if j.get("status") == "PENDING" and not is_job_done(j)]
 
-        if num_jobs_found == 0:
-            # Case A: No PENDING jobs.
-            # (We already know there are no *active* IN_PROGRESS jobs)
+        if not pending_jobs:
+            clear_session(db, from_num)
             return build_twiml_reply(
                 "No active job assigned yet. Please contact your supervisor.\n"
                 "कोई सक्रिय जॉब असाइन नहीं है। कृपया सुपरवाइज़र से संपर्क करें।"
             )
-        
-        elif num_jobs_found == 1:
-            # Case B: Only one PENDING job, auto-select it.
-            current_job = pending_jobs[0]
-            db.jobs.update_one({"_id": current_job["_id"]}, {"$set": {"status": "IN_PROGRESS"}})
-            current_job["status"] = "IN_PROGRESS" # Update in-memory doc
-        
-        else:
-            # Case C: Multiple PENDING jobs. User needs to select a SECTOR ID.
-            
-            # Build list of available sector IDs
-            available_sectors = {} # Map "SECTOR_ID_UPPER" -> job
-            for j in pending_jobs:
-                sector_id = j.get("sector")
-                if sector_id:
-                    available_sectors[sector_id.upper()] = j
-            
-            if not available_sectors:
-                return build_twiml_reply("Error: No sectors found in pending jobs.")
 
-            # Check if user's text matches one of the sector IDs
-            matched_job = available_sectors.get(user_message_body.upper())
+        # Build unique site list
+        site_ids = sorted({
+            str(j.get("siteId", "")).strip()
+            for j in pending_jobs
+            if str(j.get("siteId", "")).strip()
+        })
 
-            if matched_job:
-                # User provided a valid sector ID
-                current_job = matched_job
-                # Set the *chosen* JOB to IN_PROGRESS
-                db.jobs.update_one(
-                    {"_id": current_job["_id"]}, 
-                    {"$set": {"status": "IN_PROGRESS"}}
-                )
-                current_job["status"] = "IN_PROGRESS"
-                
+        if not site_ids:
+            clear_session(db, from_num)
+            return build_twiml_reply("Error: No Site IDs found in pending jobs.")
+
+        session = get_session(db, from_num)
+        selected_site = (session.get("selectedSiteId") or "").strip()
+
+        # ---- STEP 1: SELECT SITE ----
+        if not selected_site:
+            typed = user_message_body.strip()
+
+            # If user typed a valid Site ID, accept it
+            if typed and typed in site_ids:
+                selected_site = typed
+                set_session(db, from_num, selectedSiteId=selected_site)
             else:
-                # User has multiple jobs but hasn't selected one, or just said "Hi".
-                # Prompt them to select.
-                prompt_lines = [f"➡️ {sector_id}" for sector_id in sorted(available_sectors.keys())]
-                reply_text = (
-                    "You have multiple active sectors. Reply with the Sector ID you are working on:\n\n"
-                    "आपके पास एक से ज़्यादा सक्रिय सेक्टर हैं। आप जिस सेक्टर पर काम कर रहे हैं उसकी ID भेजें:\n\n"
-                ) + "\n".join(prompt_lines)
-                
-                return build_twiml_reply(reply_text)
-    
-    # --- END: REVISED JOB & SECTOR SELECTION LOGIC ---
-    
-    # At this point, 'current_job' MUST be set.
-    
-    # Check again if it's done (e.g., an IN_PROGRESS job that just finished)
+                lines = [f"➡️ {s}" for s in site_ids]
+                return build_twiml_reply(
+                    "Reply with the Site ID you are working on:\n\n"
+                    "आप जिस Site ID पर काम कर रहे हैं वो भेजें:\n\n" +
+                    "\n".join(lines)
+                )
+
+        # ---- STEP 2: SELECT SECTOR WITHIN SITE ----
+        site_jobs = [
+            j for j in pending_jobs
+            if str(j.get("siteId", "")).strip() == selected_site
+        ]
+
+        sector_map: Dict[str, Dict[str, Any]] = {}
+        for j in site_jobs:
+            sec = j.get("sector")
+            if sec:
+                sector_map[str(sec).strip().upper()] = j
+
+        if not sector_map:
+            clear_session(db, from_num)
+            return build_twiml_reply(
+                f"No sectors found for Site ID: {selected_site}\n"
+                f"इस Site ID के लिए कोई सेक्टर नहीं मिला: {selected_site}"
+            )
+
+        # Auto-pick if only 1 sector in the selected site
+        if len(sector_map) == 1:
+            current_job = list(sector_map.values())[0]
+        else:
+            typed_sector = user_message_body.strip().upper()
+            if typed_sector in sector_map:
+                current_job = sector_map[typed_sector]
+            else:
+                lines = [f"➡️ {s}" for s in sorted(sector_map.keys())]
+                return build_twiml_reply(
+                    f"Site selected: {selected_site}\n"
+                    f"Now reply with Sector ID:\n\n"
+                    f"Site चुना गया: {selected_site}\n"
+                    f"अब Sector ID भेजें:\n\n" +
+                    "\n".join(lines)
+                )
+
+        # Mark chosen job IN_PROGRESS, clear session
+        db.jobs.update_one({"_id": current_job["_id"]}, {"$set": {"status": "IN_PROGRESS"}})
+        current_job["status"] = "IN_PROGRESS"
+        clear_session(db, from_num)
+
+    # At this point, current_job MUST be set.
+
+    # If job is done, mark done and restart selection
     if is_job_done(current_job):
         db.jobs.update_one({"_id": current_job["_id"]}, {"$set": {"status": "DONE"}})
-        # Recurse to re-trigger selection for the *next* job
+        clear_session(db, from_num)
         return await whatsapp_webhook(request, background, db)
 
     expected_photo_type = _current_expected_type_for_job(current_job)
-    job_sector_id = current_job.get("sector") # Get the sector ID for this job
-    
+    job_sector_id = current_job.get("sector")
+
     # If text-only, (re)prompt with example
     if media_count == 0:
         fallback = expected_photo_type or "LABELLING"
@@ -389,27 +452,26 @@ async def whatsapp_webhook(request: Request, background: BackgroundTasks, db=Dep
             media_urls=_safe_example_list(example),
         )
 
-    # Persist original image right away (S3/local) for reliability
+    # Persist original image right away
     try:
         result_hint = (expected_photo_type or "LABELLING").upper()
-        # Use the job's sector ID in the S3 key
         key = new_image_key(str(current_job["_id"]), f"s{job_sector_id}_{result_hint.lower()}", "jpg")
         put_result = put_bytes(key, data)
         s3_url = put_result if isinstance(put_result, str) else None
 
         db.photos.insert_one({
             "jobId": str(current_job["_id"]),
-            "sector": job_sector_id, # Store the job's sector ID on the photo
-            "type": result_hint,          # will be replaced by actual detected type in BG
+            "sector": job_sector_id,
+            "type": result_hint,          # replaced by actual detected type in BG
             "s3Key": key,
-            "s3Url": s3_url,              # optional if your storage returns URL
+            "s3Url": s3_url,
             "phash": None,
             "ocrText": None,
             "fields": {},
             "checks": {},
             "status": "PROCESSING",
             "reason": [],
-            "createdAt": datetime.utcnow(), # Added createdAt
+            "createdAt": datetime.utcnow(),
         })
     except Exception as e:
         print("[STORAGE/DB] initial save error:", repr(e))
@@ -418,21 +480,20 @@ async def whatsapp_webhook(request: Request, background: BackgroundTasks, db=Dep
             "इमेज सेव नहीं हो पाई, बाद में दोबारा भेजें।"
         )
 
-    # Kick background validation → sector-aware update → proactive notify
+    # Background validation + notify
     background.add_task(
         _process_and_notify,
         db,
         from_num,
-        current_job["_id"], # Just pass the job_id
+        str(current_job["_id"]),
         data
     )
 
-    # Immediate ACK (stay under 15s)
+    # Immediate ACK
     return build_twiml_reply(
         "📥 Got the photo. Processing… please wait for the next instruction.\n"
         "📥 फोटो मिल गई। प्रोसेस हो रही है — अगला निर्देश जल्दी मिलेगा।"
     )
-
 
 # ---------------------------
 # Debug: direct upload (no WhatsApp)
@@ -458,9 +519,9 @@ async def debug_upload(
         "sector": sector,
         "status": {"$in": ["PENDING", "IN_PROGRESS"]}
     })
-    
+
     if not job:
-        # Create a minimal job for testing
+        # These must exist in your codebase as before
         req_types = build_required_types_for_sector(sector)
         job_doc = new_job(
             worker_phone=workerPhone,
@@ -468,23 +529,21 @@ async def debug_upload(
             siteId=siteId,
             sector=sector
         )
-        job_doc["status"] = "IN_PROGRESS" # Start it right away for debug
-        
+        job_doc["status"] = "IN_PROGRESS"
+
         try:
             ins = db.jobs.insert_one(job_doc)
             job_doc["_id"] = ins.inserted_id
             job = job_doc
         except Exception:
-             # It might already exist (race condition or old DONE job)
-             job = db.jobs.find_one({
-                 "workerPhone": workerPhone,
-                 "siteId": siteId,
-                 "sector": sector,
-             })
-             if not job:
-                 return JSONResponse({"error": "Failed to create or find job"}, status_code=500)
+            job = db.jobs.find_one({
+                "workerPhone": workerPhone,
+                "siteId": siteId,
+                "sector": sector,
+            })
+            if not job:
+                return JSONResponse({"error": "Failed to create or find job"}, status_code=500)
 
-    # Get expected type
     expected = _current_expected_type_for_job(job)
 
     data = await file.read()
@@ -495,7 +554,6 @@ async def debug_upload(
     except Exception as e:
         return JSONResponse({"error": f"decode_failed: {repr(e)}"}, status_code=400)
 
-    # Prior phashes (same job + expected type)
     prev_phashes = [
         p.get("phash")
         for p in db.photos.find(
@@ -510,7 +568,6 @@ async def debug_upload(
         if p.get("phash")
     ]
 
-    # Run pipeline
     try:
         result = run_pipeline(
             img,
@@ -518,7 +575,6 @@ async def debug_upload(
             existing_phashes=prev_phashes
         )
 
-        # Optional: promote fields to job
         fields = result.get("fields") or {}
         updates: Dict[str, Any] = {}
         if fields.get("macId"):
@@ -534,7 +590,6 @@ async def debug_upload(
         traceback.print_exc()
         return JSONResponse({"error": f"pipeline_crashed: {repr(e)}"}, status_code=500)
 
-    # Save to storage
     result_type = (result.get("type") or expected or "LABELLING").upper()
     try:
         key = new_image_key(str(job["_id"]), f"s{sector}_{result_type.lower()}", "jpg")
@@ -559,7 +614,6 @@ async def debug_upload(
         traceback.print_exc()
         return JSONResponse({"error": f"save_failed: {repr(e)}"}, status_code=500)
 
-    # Advance this job on exact PASS
     if (result.get("status") or "").upper() == "PASS" and expected and result_type == expected:
         db.jobs.update_one(
             {"_id": job["_id"]},
