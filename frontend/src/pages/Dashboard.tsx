@@ -79,7 +79,8 @@ export default function Dashboard() {
       sectorProgress: j?.sectorProgress,
     }));
   }, [jobs]);
-
+  console.log("UI Tasks:", uiTasks);
+   console.log("Backend Jobs:", jobs);
   const liveStats = useMemo(() => {
     const total = uiTasks.length;
     const pending = uiTasks.filter((t) => t.status === "PENDING").length;

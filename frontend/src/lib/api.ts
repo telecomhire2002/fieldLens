@@ -20,6 +20,7 @@ export type BackendJob = {
   id: string;
   workerPhone: string;
   siteId: string;
+  sector: string;
   sectors: SectorBlock[];
   circle: string
   company: string

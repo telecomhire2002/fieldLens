@@ -58,6 +58,7 @@ def _job_to_out(doc: dict) -> JobOut:
         id=str(doc["_id"]),
         workerPhone=doc["workerPhone"],
         siteId=doc["siteId"],
+        sector=doc.get("sector"),
         sectors=sectors_out,
         requiredTypes=doc.get("requiredTypes", []),
         currentIndex=int(doc.get("currentIndex", 0) or 0),

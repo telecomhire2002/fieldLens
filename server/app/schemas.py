@@ -20,7 +20,7 @@ class JobOut(BaseModel):
     id: str
     workerPhone: str
     siteId: str
-
+    sector: str
     # NOTE: plural here – matches _job_to_out
     sectors: List[SectorProgress]
 

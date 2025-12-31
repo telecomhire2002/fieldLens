@@ -30,7 +30,7 @@ export function TaskCard({ task, onPreview, onDeleted }: any) {
     DONE: "bg-green-100 text-green-800 border-green-300",
     FAILED: "bg-red-100 text-red-800 border-red-300",
   };
-
+  // console.log("Rendering TaskCard for task:", task);
   const prettyStatus = (s: TaskStatus) =>
     s === "PENDING" ? "Pending" :
     s === "IN_PROGRESS" ? "In Progress" :
