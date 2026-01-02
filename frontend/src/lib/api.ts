@@ -227,3 +227,43 @@ export async function getSectorTemplate(sector: number) {
     sector: number;
   };
 }
+
+/** ----- FULL SITE BUNDLE ZIP (Sec1/Sec2/Sec3 images + both excels) ----- */
+export async function downloadJobBundleZip(jobId: string, file: File): Promise<void> {
+  const formData = new FormData();
+  formData.append("mainExcel", file);
+
+  const res = await api.post(`/jobs/${encodeURIComponent(jobId)}/export_bundle.zip`, formData, {
+    responseType: "blob",
+  });
+
+  // Prefer backend-provided filename
+  let filename =
+    (res.headers["x-filename"] as string) ||
+    (res.headers["content-disposition"] as string) ||
+    `site_${jobId}_EXPORT.zip`;
+
+  // Parse Content-Disposition if present
+  if (filename.includes("filename=")) {
+    const m = filename.match(/filename\*?=(?:UTF-8'')?["']?([^"';\n]+)["']?/i);
+    if (m?.[1]) filename = decodeURIComponent(m[1]);
+  }
+
+  // Ensure extension
+  if (!filename.toLowerCase().endsWith(".zip")) {
+    filename = `${filename}.zip`;
+  }
+
+  const blob = new Blob([res.data], {
+    type: res.headers["content-type"] || "application/zip",
+  });
+
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+}

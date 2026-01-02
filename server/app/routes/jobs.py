@@ -1176,88 +1176,199 @@ def _dt_or_none(s: str | None):
     return dt.datetime.strptime(s, "%Y-%m-%d")
 
 
-@router.get("/exports/sector.xlsx")
-def export_sector_xlsx(
+@router.post("/jobs/{job_id}/export_bundle.zip")
+async def export_bundle_zip(
+    job_id: str,
+    mainExcel: UploadFile = File(...),
     db=Depends(get_db),
-    date_from: str | None = Query(None, description="YYYY-MM-DD"),
-    date_to: str | None = Query(None, description="YYYY-MM-DD"),
 ):
-    """
-    Manual export – data grouped by sector, one sheet per sector.
-    """
-    q = {}
-    if date_from or date_to:
-        tmin = _dt_or_none(date_from) or dt.datetime.min
-        tmax = _dt_or_none(date_to) or dt.datetime.max
-        q["createdAt"] = {"$gte": tmin, "$lte": tmax}
+    # -----------------------------
+    # 1) Fetch base job
+    # -----------------------------
+    try:
+        base_job = db.jobs.find_one({"_id": ObjectId(job_id)})
+    except Exception:
+        raise HTTPException(400, "Invalid Job ID")
 
-    jobs = list(db.jobs.find(q))
-    by_sector: Dict[str | None, list[dict]] = {}
+    if not base_job:
+        raise HTTPException(404, "Job not found")
 
-    for j in jobs:
-        job_id = str(j["_id"])
-        worker = j.get("workerPhone")
-        photos = list(db.photos.find({"jobId": job_id}))
-        for p in photos:
-            photo_sector = str(p.get("sector")) if p.get("sector") is not None else None
-            f = p.get("fields", {}) or {}
-            c = p.get("checks", {}) or {}
-            base = (p.get("type") or "PHOTO").lower()
-            
-            ext = ".jpg"
-            key = p.get("s3Key", "")
-            for e in (".jpeg", ".jpg", ".png", ".webp"):
-                if key.lower().endswith(e):
-                    ext = e
-                    break
-            logical = (f"sec{photo_sector}_{base}{ext}"
-                       if photo_sector is not None else f"{base}{ext}")
+    worker = base_job.get("workerPhone")
+    site_id = str(base_job.get("siteId", "")).strip()
 
-            row = {
-                "jobId": job_id,
-                "workerPhone": worker,
-                "sector": photo_sector,
-                "photoId": str(p.get("_id")),
-                "type": p.get("type"),
-                "s3Key": key,
-                "s3Url": presign_url(key) if key else None,
-                "logicalName": logical,
-                "macId": f.get("macId"),
-                "rsn": f.get("rsn"),
-                "azimuthDeg": f.get("azimuthDeg"),
-                "blurScore": c.get("blurScore"),
-                "isDuplicate": c.get("isDuplicate"),
-                "skewDeg": c.get("skewDeg"),
-                "status": p.get("status"),
-                "reason": "|".join(p.get("reason") or []),
-            }
-            by_sector.setdefault(photo_sector, []).append(row)
+    if not worker or not site_id:
+        raise HTTPException(400, "workerPhone/siteId missing in job")
 
-    # Build workbook (one sheet per sector)
-    wb = Workbook()
-    default_ws = wb.active
-    wb.remove(default_ws)
+    # -----------------------------
+    # 2) Find all jobs for this worker+site (sectors)
+    # -----------------------------
+    related_jobs = list(db.jobs.find({"workerPhone": worker, "siteId": site_id}))
+    if not related_jobs:
+        raise HTTPException(404, "No sector jobs found for this site")
 
-    def write_sheet(title: str, rows: list[dict]):
-        ws = wb.create_sheet(title=title)
-        if not rows:
-            ws.append(["No data"])
-            return
-        df = pd.DataFrame(rows)
-        ws.append(list(df.columns))
-        for _, r in df.iterrows():
-            ws.append(list(r.values))
+    # Normalize sector -> Sec1/Sec2/Sec3
+    alpha_map = {"alpha": 1, "beta": 2, "gamma": 3}
 
-    for s in sorted(k for k in by_sector.keys() if k is not None):
-        write_sheet(f"Sec{s}", by_sector[s])
-    if None in by_sector:
-        write_sheet("Unknown", by_sector[None])
+    def norm_sector(raw: str) -> str:
+        raw = str(raw or "").strip()
+        low = raw.lower()
 
-    buf = io.BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    return Response(
-        content=buf.getvalue(),
-        headers={"Content-Disposition": 'attachment; filename="export_sector.xlsx"'},
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        sec_num = None
+        if low in alpha_map:
+            sec_num = alpha_map[low]
+        elif raw.startswith("-") and raw[1:].isdigit():
+            sec_num = int(raw[1:])
+        elif raw.isdigit():
+            sec_num = int(raw)
+        elif low.startswith("sec") and raw[3:].isdigit():
+            sec_num = int(raw[3:])
+
+        return f"Sec{sec_num}" if sec_num else raw
+
+    # Completion check: must have Sec1, Sec2, Sec3 AND all DONE
+    by_sec = {}
+    for j in related_jobs:
+        sec = norm_sector(j.get("sector"))
+        by_sec[sec] = j
+
+    required_secs = ["Sec1", "Sec2", "Sec3"]
+    missing = [s for s in required_secs if s not in by_sec]
+    if missing:
+        raise HTTPException(
+            400,
+            f"Site is not having all 3 sectors yet (missing: {', '.join(missing)})"
+        )
+
+    def is_done(jobdoc: dict) -> bool:
+        # accept either top-level status DONE or sector-block DONE
+        st = (jobdoc.get("status") or "").upper()
+        if st == "DONE":
+            return True
+        secs = jobdoc.get("sectors") or []
+        if secs and isinstance(secs, list):
+            s0 = secs[0] or {}
+            return (str(s0.get("status") or "").upper() == "DONE")
+        return False
+
+    not_done = [s for s in required_secs if not is_done(by_sec[s])]
+    if not_done:
+        raise HTTPException(
+            400,
+            f"Site is not completed for all 3 sectors yet (not done: {', '.join(not_done)})"
+        )
+
+    # -----------------------------
+    # 3) Build both excel outputs (reuse your existing endpoints)
+    # IMPORTANT: reset file pointer before each call
+    # -----------------------------
+    try:
+        mainExcel.file.seek(0)
+    except Exception:
+        pass
+
+    # Book3 excel (your export.csv route produces XLSX)
+    resp_book3 = export_csv(job_id=job_id, mainExcel=mainExcel, db=db)
+    book3_bytes = getattr(resp_book3, "body", None) or resp_book3.content
+    book3_name = resp_book3.headers.get("X-Filename") or "Book3_export.xlsx"
+
+    try:
+        mainExcel.file.seek(0)
+    except Exception:
+        pass
+
+    # Book1 excel (your export.xlsx route)
+    resp_book1 = await export_xlsx(job_id=job_id, mainExcel=mainExcel, db=db)
+    book1_bytes = getattr(resp_book1, "body", None) or resp_book1.content
+    book1_name = resp_book1.headers.get("X-Filename") or "Book1_export.xlsx"
+
+    # -----------------------------
+    # 4) Collect all photos for this site across all sector-jobs
+    # and write them into zip folders Sec1/Sec2/Sec3
+    # -----------------------------
+    def _clean_key(k: str | None) -> str | None:
+        if not k:
+            return None
+        k = str(k)
+        if k.startswith("s3://"):
+            try:
+                return k.split("/", 3)[-1].split("/", 1)[-1]
+            except Exception:
+                return None
+        return k
+
+    def _safe_ext_from_key(key: str | None) -> str:
+        if not key:
+            return ".jpg"
+        low = key.lower()
+        for e in (".jpeg", ".jpg", ".png", ".webp"):
+            if low.endswith(e):
+                return e
+        return ".jpg"
+
+    mem = io.BytesIO()
+    with zipfile.ZipFile(mem, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        # add both excels in root
+        zf.writestr(book3_name, book3_bytes)
+        zf.writestr(book1_name, book1_bytes)
+
+        # add images sector-wise
+        for sec in required_secs:
+            jobdoc = by_sec[sec]
+            jid = str(jobdoc["_id"])
+
+            photos = list(db.photos.find({"jobId": {"$in": [jid, str(jid)]}}).sort("_id", 1))
+            # also support photos stored with string jobId already (your other routes do this)
+            if not photos:
+                photos = list(db.photos.find({"jobId": jid}).sort("_id", 1))
+
+            for p in photos:
+                ptype = (p.get("type") or "PHOTO").lower()
+                photo_id = str(p.get("_id") or "")
+                p_sector = p.get("sector")
+
+                # folder decided by job sector (Sec1/Sec2/Sec3)
+                folder = sec
+
+                key_raw = p.get("s3Key") or ""
+                key = _clean_key(key_raw)
+                ext = _safe_ext_from_key(key_raw)
+
+                # avoid overwrite: include photoId
+                arcname = f"{folder}/sec{sec[-1]}_{ptype}_{photo_id}{ext}"
+
+                lp = p.get("localPath")
+                if lp and os.path.exists(lp):
+                    zf.write(lp, arcname=arcname)
+                    continue
+
+                if key:
+                    try:
+                        # use your S3 helper (already imported)
+                        data = get_bytes(key)  # must return bytes
+                        if data:
+                            zf.writestr(arcname, data)
+                            continue
+                    except Exception as ex:
+                        print(f"[BUNDLE ZIP] s3 fetch failed key={key}: {ex}")
+
+                # fallback marker
+                zf.writestr(
+                    arcname.replace(ext, "_MISSING.txt"),
+                    b"Missing or inaccessible image"
+                )
+
+    mem.seek(0)
+
+    # nice filename
+    site_name = (base_job.get("siteId") or "site").strip()
+    fname = f"{site_name}_EXPORT.zip"
+
+    return StreamingResponse(
+        mem,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{fname}"',
+            "X-Filename": fname,
+            "Access-Control-Expose-Headers": "Content-Disposition, X-Filename",
+        },
     )

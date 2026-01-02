@@ -4,10 +4,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ArrowLeft, Download, Archive, Calendar, FileText } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { BackendJob, fetchJobs,downloadJobZip } from "@/lib/api";
+import { BackendJob, fetchJobs, downloadJobBundleZip } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
-type TaskStatus = "DONE";
 
+type TaskStatus = "DONE";
 
 export default function Exports() {
   const navigate = useNavigate();
@@ -15,6 +15,9 @@ export default function Exports() {
   const [jobs, setJobs] = useState<BackendJob[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // NEW: main excel file for bundle export
+  const [mainExcelFile, setMainExcelFile] = useState<File | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -42,21 +45,129 @@ export default function Exports() {
         return new Date().toISOString();
       }
     };
+
     const toUpper = (s: string) => (s ? s.toUpperCase() : s);
 
-    return jobs.map((j) => ({
-      id: j.id,
-      title: `Job • ${j.workerPhone}`,
-      circle:j.circle,
-      company:j.company,
-      siteId:j.siteId,
-      sector:j.sectors,
+    // ---------- helpers to decide "final export ready" ----------
+    const alphaMap: Record<string, number> = { alpha: 1, beta: 2, gamma: 3 };
+
+    const normalizeSector = (raw: string) => {
+      const s = String(raw || "").trim();
+      const low = s.toLowerCase();
+
+      if (alphaMap[low]) return `Sec${alphaMap[low]}`;
+      if (low.startsWith("sec") && /^\d+$/.test(s.slice(3)))
+        return `Sec${parseInt(s.slice(3), 10)}`;
+      if (s.startsWith("-") && /^\d+$/.test(s.slice(1)))
+        return `Sec${parseInt(s.slice(1), 10)}`;
+      if (/^\d+$/.test(s)) return `Sec${parseInt(s, 10)}`;
+      return s; // fallback
+    };
+
+    const isDone = (j: BackendJob) => {
+      const top = String(j.status || "").toUpperCase();
+      const block = String(j.sectors?.[0]?.status || "").toUpperCase();
+      return top === "DONE" || block === "DONE";
+    };
+
+    // group jobs by siteId
+    const groups = new Map<string, BackendJob[]>();
+    for (const j of jobs) {
+      const sid = String(j.siteId || "").trim();
+      if (!sid) continue;
+      if (!groups.has(sid)) groups.set(sid, []);
+      groups.get(sid)!.push(j);
+    }
+
+    // build ONLY those "site" entries where Sec1+Sec2+Sec3 exist and are DONE
+    const finalExportReadyCards: Array<{
+      id: string;
+      title: string;
+      circle: string;
+      company: string;
+      siteId: string;
+      sector: any[];
+      status: TaskStatus;
+      createdAt: string;
+    }> = [];
+
+    const required = ["Sec1", "Sec2", "Sec3"];
+
+    for (const [siteId, list] of groups.entries()) {
+      // map sector -> job (pick latest if duplicates)
+      const sectorToJob = new Map<string, BackendJob>();
+
+      for (const j of list) {
+        const sec = normalizeSector(j.sector);
+        if (!sec) continue;
+
+        const prev = sectorToJob.get(sec);
+        if (!prev) {
+          sectorToJob.set(sec, j);
+          continue;
+        }
+
+        const prevT = new Date(toIsoCreated(prev)).getTime();
+        const curT = new Date(toIsoCreated(j)).getTime();
+        if (curT >= prevT) sectorToJob.set(sec, j);
+      }
+
+      // must have all 3 sectors
+      const hasAll = required.every((s) => sectorToJob.has(s));
+      if (!hasAll) continue;
+
+      // all 3 must be DONE
+      const allDone = required.every((s) => isDone(sectorToJob.get(s)!));
+      if (!allDone) continue;
+
+      // pick one job as "export id" (use Sec1 if available)
+      const pick =
+        sectorToJob.get("Sec1") || sectorToJob.get("Sec2") || sectorToJob.get("Sec3")!;
+      const exportJobId = pick.id;
+
+      // latest createdAt among 3
+      const latestCreatedAt = new Date(
+        Math.max(
+          ...required.map((s) => new Date(toIsoCreated(sectorToJob.get(s)!)).getTime())
+        )
+      ).toISOString();
+
+      // Build sector blocks to keep UI unchanged (exportItem.sector.map(e=>e.sector))
+      const sectorsForUi = required.map((sec) => {
+        const jj = sectorToJob.get(sec)!;
+        return {
+          sector: sec,
+          requiredTypes: jj.sectors?.[0]?.requiredTypes || [],
+          currentIndex: jj.sectors?.[0]?.currentIndex ?? 0,
+          status: (jj.sectors?.[0]?.status || jj.status || "DONE") as any,
+        };
+      });
+
+      finalExportReadyCards.push({
+        id: exportJobId, // UI shows "JOB ID" - keep field, but it represents the exportable site bundle
+        title: `Job • ${pick.workerPhone}`,
+        circle: pick.circle,
+        company: pick.company,
+        siteId: siteId,
+        sector: sectorsForUi,
+        status: "DONE",
+        createdAt: latestCreatedAt,
+      });
+    }
+
+    // sort newest first
+    finalExportReadyCards.sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+
+    return finalExportReadyCards.map((j) => ({
+      ...j,
       status: toUpper(j.status) as TaskStatus,
-      createdAt: toIsoCreated(j),
     }));
   }, [jobs]);
 
   const filteredTasks = useMemo(() => {
+    // uiTasks already contains ONLY "final export ready" sites
     return uiTasks.filter((t) => t.status === "DONE");
   }, [uiTasks]);
 
@@ -66,11 +177,21 @@ export default function Exports() {
   const [downloading, setDownloading] = useState(false);
 
   const handleExport = async (taskId: string) => {
+    if (!mainExcelFile) {
+      toast({
+        title: "Main Excel required",
+        description: "Please select the main Excel file first (top of the page).",
+        variant: "destructive",
+      });
+      return;
+    }
+
     setDownloading(true);
-    toast({ title: "Export started", description: `Preparing ZIP for ${taskId}...` });
+    toast({ title: "Export started", description: `Preparing Bundle ZIP for ${taskId}...` });
+
     try {
-      await downloadJobZip(taskId);
-      toast({ title: "Export complete", description: "ZIP downloaded." });
+      await downloadJobBundleZip(taskId, mainExcelFile);
+      toast({ title: "Export complete", description: "Bundle ZIP downloaded." });
     } catch (e: any) {
       toast({
         title: "Export failed",
@@ -95,6 +216,25 @@ export default function Exports() {
           <p className="text-muted-foreground">Download and manage exported task files</p>
         </div>
       </div>
+
+      {/* NEW: main excel picker (minimal, doesn't change your cards UI) */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Main Excel (Required for Final Bundle Export)</CardTitle>
+        </CardHeader>
+        <CardContent className="flex items-center gap-3">
+          <input
+            type="file"
+            accept=".xlsx,.xls"
+            onChange={(e) => setMainExcelFile(e.target.files?.[0] ?? null)}
+          />
+          {mainExcelFile ? (
+            <Badge className="bg-success text-success-foreground">{mainExcelFile.name}</Badge>
+          ) : (
+            <Badge variant="secondary">No file selected</Badge>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Errors / Loading (optional simple states) */}
       {err && (
@@ -123,9 +263,7 @@ export default function Exports() {
                   <div className="space-y-2">
                     <div className="flex items-center gap-3">
                       <h3 className="font-medium text-foreground">{exportItem.title}</h3>
-                      <Badge className="bg-success text-success-foreground">
-                        Completed
-                      </Badge>
+                      <Badge className="bg-success text-success-foreground">Completed</Badge>
                     </div>
 
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm text-muted-foreground">
@@ -142,7 +280,8 @@ export default function Exports() {
                         <span className="font-medium">SiteId:</span> {exportItem.siteId}
                       </div>
                       <div>
-                        <span className="font-medium">Sector:</span> {exportItem.sector.map((e)=>e.sector)}
+                        <span className="font-medium">Sector:</span>{" "}
+                        {exportItem.sector.map((e: any) => e.sector)}
                       </div>
                     </div>
 
@@ -155,15 +294,14 @@ export default function Exports() {
                   </div>
 
                   <div className="flex items-center gap-2">
-                    {/* Only DONE jobs are in the list, but keep the guard */}
                     {exportItem.status === "DONE" && (
                       <Button
                         onClick={() => handleExport(exportItem.id)}
                         className="gap-2"
-                        disabled={downloads[exportItem.id]}
+                        disabled={downloading || downloads[exportItem.id]}
                       >
                         <Download className="w-4 h-4" />
-                        {downloads[exportItem.id] ? "Downloading..." : "Download ZIP"}
+                        {downloading ? "Downloading..." : "Download ZIP"}
                       </Button>
                     )}
                   </div>

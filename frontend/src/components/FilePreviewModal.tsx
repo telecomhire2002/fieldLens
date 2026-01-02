@@ -71,6 +71,9 @@ export default function FilePreviewModal({ isOpen, taskId, onClose }: Props) {
   const [imageNames, setImageNames] = useState<Record<string, string>>({});
   const [editingImage, setEditingImage] = useState<string | null>(null);
 
+  // NEW: image zip export loading state
+  const [exportingZip, setExportingZip] = useState(false);
+
   useEffect(() => {
     if (!isOpen || !taskId) return;
     setLoading(true);
@@ -256,6 +259,22 @@ export default function FilePreviewModal({ isOpen, taskId, onClose }: Props) {
 
   const canSectorDownload = selectedSector != null && selectedSector !== "";
 
+  // NEW: Export Images ZIP button handler (calls /jobs/{jobId}/export.zip)
+  const handleExportImagesZip = async () => {
+    if (!taskId) return;
+    setExportingZip(true);
+    try {
+      // if you want sector-only zip, pass opts: { sector: Number(selectedSector) }
+      // but your backend /export.zip currently exports ALL photos for that jobId
+      await downloadJobZip(taskId);
+    } catch (e) {
+      console.error(e);
+      alert("Export ZIP failed");
+    } finally {
+      setExportingZip(false);
+    }
+  };
+
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent aria-describedby={undefined} className="max-w-6xl h-[80vh] p-0 overflow-hidden">
@@ -304,6 +323,19 @@ export default function FilePreviewModal({ isOpen, taskId, onClose }: Props) {
 
               {!loading && !err && (
                 <>
+                  {/* NEW: export images zip button (doesn't change the grid UI) */}
+                  <div className="flex justify-end mb-4">
+                    <Button
+                      size="sm"
+                      variant="default"
+                      onClick={handleExportImagesZip}
+                      disabled={exportingZip || loading || !data}
+                    >
+                      <Download className="w-4 h-4 mr-2" />
+                      {exportingZip ? "Exporting..." : "Export Images ZIP"}
+                    </Button>
+                  </div>
+
                   {requiredTypesForGrid.length > 0 ? (
                     <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
                       {requiredTypesForGrid.map((t) => {
@@ -453,7 +485,6 @@ export default function FilePreviewModal({ isOpen, taskId, onClose }: Props) {
                       }
                     }}
                   />
-
                 </div>
               </div>
 
