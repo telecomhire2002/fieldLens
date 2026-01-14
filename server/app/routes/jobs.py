@@ -1052,17 +1052,24 @@ async def export_xlsx(
         if cellA.value and str(cellA.value).strip() in section_headers:
             cellA.fill = yellow_fill
             cellA.font = bold_font
+    sector_nums = []
+    for d in sec_info_sorted:
+        m = re.findall(r"\d+", d.get("sector", ""))
+        if m:
+            sector_nums.append(m[0])
 
+    sector_part = ",".join(sector_nums)  # "1,2,3"
+
+    final_filename = f"{site_id} - Sec{sector_part} - ATP11A checklist.xlsx"
     out = BytesIO()
     wb.save(out)
     out.seek(0)
-    filename = f"A6_{base_sitename}.xlsx"
     return Response(
         content=out.getvalue(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={
-        "Content-Disposition": f'attachment; filename="{filename}"',
-        "X-Filename": filename,  # ✅ easy for frontend to read
+        "Content-Disposition": f'attachment; filename="{final_filename}"',
+        "X-Filename": final_filename,  # ✅ easy for frontend to read
         "Access-Control-Expose-Headers": "Content-Disposition, X-Filename",  # ✅ IMPORTANT
     },
     )
