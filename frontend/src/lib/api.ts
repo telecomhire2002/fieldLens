@@ -5,7 +5,7 @@ import axios from "axios";
 /** ---------- AXIOS CLIENT ---------- */
 export const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || "http://127.0.0.1:8000/api",
-  withCredentials: false,
+  withCredentials: true,
 });
 
 /** ---------- TYPES (keep in sync with backend) ---------- */
