@@ -17,22 +17,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api.get("/auth/me")
-      .then(res => setUser(res.data?.user ?? null))
-      .catch(() => setUser(null))
-      .finally(() => setLoading(false));
-  }, []);
+  const token = localStorage.getItem("admin_token");
+
+  if (!token) {
+    setLoading(false);
+    return;
+  }
+
+  api.get("/auth/me")
+    .then(res => setUser(res.data?.user ?? null))
+    .catch(() => {
+      localStorage.removeItem("admin_token");
+      setUser(null);
+    })
+    .finally(() => setLoading(false));
+}, []);
 
   const login = async (username: string, password: string) => {
-    await api.post("/auth/login", { username, password });
-    const me = await api.get("/auth/me");
-    setUser(me.data?.user ?? null);
-  };
+  const res = await api.post("/auth/login", {
+    username,
+    password,
+  });
+
+  localStorage.setItem(
+    "admin_token",
+    res.data.token
+  );
+
+  setUser(res.data.user);
+};
 
   const logout = async () => {
-    await api.post("/auth/logout");
-    setUser(null);
-  };
+  localStorage.removeItem("admin_token");
+  setUser(null);
+};
 
   return <Ctx.Provider value={{ user, loading, login, logout }}>{children}</Ctx.Provider>;
 }
